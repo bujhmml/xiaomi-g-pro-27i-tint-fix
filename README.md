@@ -1,8 +1,8 @@
 # Xiaomi G Pro 27i — fix warm tint after wake (macOS)
 
 A one-line shell script that does in software what the OSD button trick does manually:
-switch the picture mode to a different color preset and back, which forces the monitor's
-color pipeline to re-converge and clears the warm/yellow/red tint that appears on every
+issues a DDC "restore factory color defaults" command, which forces the monitor's color
+pipeline to re-converge and clears the warm/yellow/red tint that appears on every
 sleep/wake or cold start.
 
 The monitor: **Xiaomi Gaming Monitor G Pro 27i (ELA5585EU)**, MiniLED, 1440p@180Hz.
@@ -11,12 +11,11 @@ revisions `1.0.06`–`1.0.10`. There is no public firmware update path — see *
 
 ## What it does
 
-Sends one DDC command to set `selectColorPreset` (VCP `0x14`) to `6` (7500K), waits
-1.2 seconds, then sets it back to `5` (6500K). From the monitor's point of view this is
-the same kind of event as pressing the OSD joystick to switch picture mode and back.
-
-If your monitor reports a different value for the standard preset, change the two
-arguments in the script. See *Tuning* below.
+Sends one DDC command writing VCP `0x08` (`restoreFactoryColorDefaults`) with value `1`.
+On this monitor that has the same effect as flipping the picture mode in the OSD: the
+color pipeline re-initialises and the warm cast goes away. Brightness and contrast are
+not affected; only color-related state (RGB gains, color temperature, saturation) is
+reset to factory defaults.
 
 ## Requirements
 
@@ -35,9 +34,7 @@ placeholder values (e.g. `-120` for luminance). This is independently documented
 [BetterDisplay discussion #3652](https://github.com/waydabber/BetterDisplay/discussions/3652).
 
 BetterDisplay's DDC engine reaches the monitor through a different IOKit pathway that
-this panel honours consistently. Every brightness key press on macOS Tahoe goes through
-that pathway too — which is why pressing brightness up once on the keyboard happens to
-"fix" the tint in one keystroke.
+this panel honours consistently.
 
 ## Install
 
@@ -54,8 +51,8 @@ chmod +x ~/bin/fix-monitor-tint.sh
 ~/bin/fix-monitor-tint.sh
 ```
 
-The screen should not flicker. If the script runs and nothing visible changes when the
-tint is present, jump to *Tuning*.
+When run while the tint is visible, the screen returns to neutral within a fraction of
+a second. There is no flicker.
 
 ## Bind to a hotkey
 
@@ -94,40 +91,37 @@ I have not personally run this for a long enough period to be sure the BetterDis
 HTTP server is consistently ready by the time the script fires. Start with the manual
 hotkey, observe for a week, then automate.
 
-## Tuning
+## Caveat — custom color calibration is wiped
 
-If the toggle `6 → 5` doesn't produce the fix on your firmware, try larger jumps. Edit
-the last two lines of the script:
+Each run issues a "restore factory color defaults" command on the monitor. If you have
+custom RGB gains, color temperature, hue or saturation values set via the OSD, they
+will be reset to factory defaults every time you run the script. Brightness and
+contrast are unaffected.
 
-```sh
-bd_set 8   # 9300K instead of 7500K — bigger color delta
-sleep 1.2
-bd_set 5
-```
+For people who haven't manually calibrated their monitor (almost everyone with this
+issue, since the monitor never settles to a neutral state on its own), this is exactly
+the behaviour you want.
 
-DDC color preset values per the standard:
-| Value | Color preset |
-|------:|--------------|
-| `1`   | sRGB |
-| `2`   | Display Native |
-| `3`   | 4000K |
-| `4`   | 5000K |
-| `5`   | 6500K (standard for most users) |
-| `6`   | 7500K |
-| `7`   | 8200K |
-| `8`   | 9300K |
-| `9`   | 10000K |
-| `10`  | 11500K |
-| `11`  | User 1 |
+## If it doesn't work on your firmware
 
-You can read your monitor's current value:
+The fix is one VCP write. If your monitor doesn't honour `restoreFactoryColorDefaults`,
+alternatives to try by editing the script:
 
 ```sh
-curl -s "http://localhost:55777/get?nameLike=Mi&ddc&vcp=selectColorPreset"
+# softer reset, sometimes enough:
+curl -fsS "http://localhost:55777/perform?nameLike=Mi&resetColorAdjustments"
+
+# color profile reset:
+curl -fsS "http://localhost:55777/perform?nameLike=Mi&colorProfileReset"
+
+# picture mode toggle (some firmwares respond to this, mine didn't):
+curl -fsS "http://localhost:55777/set?nameLike=Mi&ddc&vcp=imageMode&value=3"
+sleep 1.5
+curl -fsS "http://localhost:55777/set?nameLike=Mi&ddc&vcp=imageMode&value=1"
 ```
 
-If the script doesn't find your monitor, change `ID="nameLike=Mi"` to match a substring
-of the name BetterDisplay shows for it. List your displays:
+If the script can't find your monitor, change `nameLike=Mi` to match a substring of the
+name BetterDisplay shows for it. List your displays:
 
 ```sh
 curl -s "http://localhost:55777/get?identifiers"
@@ -164,11 +158,16 @@ References:
 
 - **m1ddc** — accepts writes but the monitor silently drops everything after the first
   command per session. Reads return junk (`-120` for luminance and contrast).
-- **`reinitialize` via BetterDisplay** — works, but is too heavy. macOS treats it as a
-  display disconnect/reconnect and may lock the screen.
-- **Pure brightness toggle** — does clear the tint visually because brightness writes
-  are accepted by this monitor, but it's more disruptive than a color preset detour
-  that returns to the same temperature.
+- **`reinitialize` via BetterDisplay** — works on the color pipeline, but is too heavy.
+  macOS treats it as a display disconnect/reconnect and may lock the screen.
+- **`selectColorPreset` toggle** (6500K → 7500K → 6500K) — worked on one reproduction,
+  failed on the next. Not reliable.
+- **`imageMode` toggle** — accepted by the monitor (no error) but had no visible effect
+  on this firmware.
+- **Brightness bump-and-restore** — visibly applies (good DDC channel proof) but does
+  not clear the tint on its own.
+- **`resetColorAdjustments` / `colorProfileReset`** — accepted, did not clear the tint
+  in my testing.
 - **Firmware update** — not an option. Xiaomi has not released one and the monitor has
   no input port that could carry it.
 
